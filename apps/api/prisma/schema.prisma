@@ -1,0 +1,443 @@
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// CodeReview.ai — Prisma Schema (PostgreSQL + pgvector)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  extensions = [vector] // pgvector for code embeddings
+}
+
+// ═══════════════════════════════════════════════════════════
+// ENUMS
+// ═══════════════════════════════════════════════════════════
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum MembershipRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum PullRequestState {
+  OPEN
+  CLOSED
+  MERGED
+}
+
+enum ReviewStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum CommentSeverity {
+  ERROR
+  WARNING
+  INFO
+  SUGGESTION
+}
+
+enum CommentCategory {
+  SECURITY
+  PERFORMANCE
+  READABILITY
+  MAINTAINABILITY
+  BUG
+  STYLE
+}
+
+enum ReviewPersona {
+  CRITIC
+  MENTOR
+  OPTIMIZER
+}
+
+enum SubscriptionPlan {
+  FREE
+  PRO
+  TEAM
+  ENTERPRISE
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELED
+  PAST_DUE
+  TRIALING
+}
+
+enum NotificationType {
+  REVIEW_COMPLETE
+  PR_ANALYZED
+  MENTION
+  BILLING
+  SYSTEM
+}
+
+enum ChatRole {
+  USER
+  ASSISTANT
+}
+
+// ═══════════════════════════════════════════════════════════
+// MODELS
+// ═══════════════════════════════════════════════════════════
+
+/// Platform user account, linked to Clerk for authentication.
+model User {
+  id        String   @id @default(cuid())
+  clerkId   String   @unique
+  email     String   @unique
+  name      String
+  avatarUrl String?
+  role      UserRole @default(USER)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  repositories  Repository[]
+  codeReviews   CodeReview[]    @relation("RequestedReviews")
+  memberships   Membership[]
+  notifications Notification[]
+  chatSessions  ChatSession[]
+  subscription  Subscription?
+  usageLogs     UsageLog[]
+
+  @@index([clerkId])
+  @@index([email])
+  @@map("users")
+}
+
+/// Organization (team) that can own repositories and have members.
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  avatarUrl String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  memberships  Membership[]
+  repositories Repository[]
+  subscription Subscription?
+
+  @@index([slug])
+  @@map("organizations")
+}
+
+/// Join table linking Users to Organizations with a role.
+model Membership {
+  id             String         @id @default(cuid())
+  userId         String
+  organizationId String
+  role           MembershipRole @default(MEMBER)
+  createdAt      DateTime       @default(now())
+
+  // Relations
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organizationId])
+  @@index([userId])
+  @@index([organizationId])
+  @@map("memberships")
+}
+
+/// Connected GitHub repository.
+model Repository {
+  id             String    @id @default(cuid())
+  githubId       Int       @unique
+  name           String
+  fullName       String
+  description    String?
+  private        Boolean   @default(false)
+  defaultBranch  String    @default("main")
+  language       String?
+  stars          Int       @default(0)
+  forks          Int       @default(0)
+  webhookId      String?
+  webhookSecret  String?
+  isActive       Boolean   @default(true)
+  lastAnalyzedAt DateTime?
+  ownerId        String?
+  organizationId String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  // Relations
+  owner        User?          @relation(fields: [ownerId], references: [id], onDelete: SetNull)
+  organization Organization?  @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  pullRequests PullRequest[]
+  codeReviews  CodeReview[]
+  chatSessions ChatSession[]
+  embeddings   CodeEmbedding[]
+
+  @@index([githubId])
+  @@index([ownerId])
+  @@index([organizationId])
+  @@index([isActive])
+  @@map("repositories")
+}
+
+/// GitHub Pull Request associated with a repository.
+model PullRequest {
+  id                String           @id @default(cuid())
+  githubPrId        Int
+  title             String
+  body              String?          @db.Text
+  state             PullRequestState @default(OPEN)
+  headBranch        String
+  baseBranch        String
+  headSha           String
+  baseSha           String
+  additions         Int              @default(0)
+  deletions         Int              @default(0)
+  changedFiles      Int              @default(0)
+  authorGithubLogin String
+  githubUrl         String
+  mergedAt          DateTime?
+  repositoryId      String
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  // Relations
+  repository  Repository  @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  codeReviews CodeReview[]
+  commits     Commit[]
+
+  @@unique([repositoryId, githubPrId])
+  @@index([repositoryId])
+  @@index([state])
+  @@map("pull_requests")
+}
+
+/// Individual commit within a pull request.
+model Commit {
+  id            String   @id @default(cuid())
+  sha           String   @unique
+  message       String   @db.Text
+  authorName    String
+  authorEmail   String
+  committedAt   DateTime
+  additions     Int      @default(0)
+  deletions     Int      @default(0)
+  pullRequestId String
+  createdAt     DateTime @default(now())
+
+  // Relations
+  pullRequest PullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
+
+  @@index([pullRequestId])
+  @@index([sha])
+  @@map("commits")
+}
+
+/// AI-powered code review of a repository or pull request.
+model CodeReview {
+  id               String       @id @default(cuid())
+  status           ReviewStatus @default(PENDING)
+  overallScore     Float?
+  readabilityScore Float?
+  securityScore    Float?
+  performanceScore Float?
+  summary          String?      @db.Text
+  repositoryId     String
+  pullRequestId    String?
+  requestedById    String
+  modelUsed        String?
+  tokensUsed       Int          @default(0)
+  processingTimeMs Int?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  // Relations
+  repository  Repository       @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  pullRequest PullRequest?     @relation(fields: [pullRequestId], references: [id], onDelete: SetNull)
+  requestedBy User             @relation("RequestedReviews", fields: [requestedById], references: [id], onDelete: Cascade)
+  comments    ReviewComment[]
+  suggestions ReviewSuggestion[]
+
+  @@index([repositoryId])
+  @@index([pullRequestId])
+  @@index([requestedById])
+  @@index([status])
+  @@index([createdAt])
+  @@map("code_reviews")
+}
+
+/// Individual comment on a code review, generated by the AI.
+model ReviewComment {
+  id           String          @id @default(cuid())
+  codeReviewId String
+  filePath     String
+  lineStart    Int?
+  lineEnd      Int?
+  severity     CommentSeverity
+  category     CommentCategory
+  title        String
+  body         String          @db.Text
+  suggestion   String?         @db.Text
+  persona      ReviewPersona
+  isResolved   Boolean         @default(false)
+  createdAt    DateTime        @default(now())
+
+  // Relations
+  codeReview CodeReview @relation(fields: [codeReviewId], references: [id], onDelete: Cascade)
+
+  @@index([codeReviewId])
+  @@index([severity])
+  @@index([category])
+  @@map("review_comments")
+}
+
+/// AI-suggested code fix within a code review.
+model ReviewSuggestion {
+  id            String   @id @default(cuid())
+  codeReviewId  String
+  filePath      String
+  originalCode  String   @db.Text
+  suggestedCode String   @db.Text
+  explanation   String   @db.Text
+  isApplied     Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  // Relations
+  codeReview CodeReview @relation(fields: [codeReviewId], references: [id], onDelete: Cascade)
+
+  @@index([codeReviewId])
+  @@map("review_suggestions")
+}
+
+/// Billing subscription for a user or organization.
+model Subscription {
+  id                   String             @id @default(cuid())
+  userId               String?            @unique
+  organizationId       String?            @unique
+  stripeCustomerId     String?            @unique
+  stripeSubscriptionId String?            @unique
+  stripePriceId        String?
+  plan                 SubscriptionPlan   @default(FREE)
+  status               SubscriptionStatus @default(ACTIVE)
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  reviewsUsed          Int                @default(0)
+  reviewsLimit         Int                @default(10)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  // Relations
+  user         User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([organizationId])
+  @@index([stripeCustomerId])
+  @@index([plan])
+  @@map("subscriptions")
+}
+
+/// In-app notification sent to a user.
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  title     String
+  body      String           @db.Text
+  type      NotificationType
+  isRead    Boolean          @default(false)
+  metadata  Json?
+  createdAt DateTime         @default(now())
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, isRead])
+  @@index([createdAt])
+  @@map("notifications")
+}
+
+/// Conversational AI chat session scoped to a user and optionally a repo.
+model ChatSession {
+  id           String   @id @default(cuid())
+  title        String?
+  userId       String
+  repositoryId String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  repository Repository? @relation(fields: [repositoryId], references: [id], onDelete: SetNull)
+  messages   ChatMessage[]
+
+  @@index([userId])
+  @@index([repositoryId])
+  @@map("chat_sessions")
+}
+
+/// Single message in a chat session.
+model ChatMessage {
+  id            String   @id @default(cuid())
+  chatSessionId String
+  role          ChatRole
+  content       String   @db.Text
+  metadata      Json?
+  createdAt     DateTime @default(now())
+
+  // Relations
+  chatSession ChatSession @relation(fields: [chatSessionId], references: [id], onDelete: Cascade)
+
+  @@index([chatSessionId])
+  @@map("chat_messages")
+}
+
+/// Vector embedding of a code chunk for semantic search (pgvector).
+model CodeEmbedding {
+  id           String   @id @default(cuid())
+  repositoryId String
+  filePath     String
+  chunkIndex   Int
+  content      String   @db.Text
+  // pgvector column — 1536 dimensions (OpenAI ada-002 compatible)
+  embedding    Unsupported("vector(1536)")
+  metadata     Json?
+  createdAt    DateTime @default(now())
+
+  // Relations
+  repository Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@unique([repositoryId, filePath, chunkIndex])
+  @@index([repositoryId])
+  @@map("code_embeddings")
+}
+
+/// Audit log for tracking AI usage (token consumption, model invocations).
+model UsageLog {
+  id         String   @id @default(cuid())
+  userId     String
+  action     String
+  tokensUsed Int      @default(0)
+  modelUsed  String?
+  durationMs Int?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("usage_logs")
+}
