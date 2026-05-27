@@ -1,0 +1,34 @@
+{
+  "extends": "../../packages/config/typescript-config/nextjs.json",
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["./*"],
+      "@codereview-ai/ui": ["../../packages/ui/src/index.ts"],
+      "@codereview-ai/ui/*": ["../../packages/ui/src/*"],
+      "@codereview-ai/types": ["../../packages/types/src/index.ts"],
+      "@codereview-ai/types/*": ["../../packages/types/src/*"],
+      "@codereview-ai/utils": ["../../packages/utils/src/index.ts"],
+      "@codereview-ai/utils/*": ["../../packages/utils/src/*"]
+    },
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ]
+  },
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts",
+    "app/**/*.ts",
+    "app/**/*.tsx",
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "components/**/*.ts",
+    "components/**/*.tsx",
+    "lib/**/*.ts",
+    "lib/**/*.tsx"
+  ],
+  "exclude": ["node_modules"]
+}
